@@ -1,2 +1,8 @@
 # Virtual environments
 .venv/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
