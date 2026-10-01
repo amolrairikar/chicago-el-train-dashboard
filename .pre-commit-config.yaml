@@ -1,0 +1,51 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+default_stages: [pre-commit]
+
+fail_fast: true
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: detect-aws-credentials
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.2.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [chore, docs, feat, fix, refactor, revert, test]
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff linter
+        description: "Uses Ruff to lint and fix Python code."
+        entry: uv run ruff check --fix .
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: Ruff formatter
+        description: "Uses Ruff to format Python code using standard conventions."
+        entry: uv run ruff format .
+        language: system
+        types: [python]
+      # - id: terraform-format
+      #   name: Terraform formatter
+      #   description: Uses Terraform's built-in format command to format .tf files using standard conventions.
+      #   entry: bash -c "cd infrastructure && terraform fmt"
+      #   language: system
+      #   types: [terraform]
+      # - id: terraform-validate
+      #   name: Terraform validator
+      #   description: Uses Terraform's built-in validator command to validate .tf files are syntactically correct.
+      #   entry: bash -c "cd infrastructure && terraform validate"
+      #   language: system
+      #   types: [terraform]
