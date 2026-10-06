@@ -6,3 +6,10 @@
 *.tfstate
 *.tfstate.*
 *.tfstate.backup
+
+# Code .zip files
+gtfs_fetch.zip
+# Python
+__pycache__/
+.pytest_cache/
+.ruff_cache/

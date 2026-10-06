@@ -5,7 +5,6 @@
 - [ ] Feature
 - [ ] Refactor
 - [ ] Bug Fix
-- [ ] CI/CD
 - [ ] Dev Tooling
 - [ ] Infra
 - [ ] Docs
