@@ -21,9 +21,11 @@ resource "google_bigquery_dataset" "raw_dataset" {
 }
 
 resource "google_bigquery_table" "positions_table" {
-  dataset_id  = google_bigquery_dataset.raw_dataset.dataset_id
-  table_id    = "positions"
-  description = "Train position data from CTA Train Tracker API"
+  dataset_id               = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id                 = "positions"
+  description              = "Train position data from CTA Train Tracker API"
+  deletion_protection      = false
+  require_partition_filter = true
 
   time_partitioning {
     type          = "HOUR"
@@ -49,7 +51,7 @@ resource "google_bigquery_table" "positions_table" {
     "name": "errNm",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "Error name associated with the train position API response. Null indicates no error."
+    "description": "Error name associated with the train position API response. Empty string indicates no error."
   },
   {
     "name": "name",
@@ -86,6 +88,12 @@ resource "google_bigquery_table" "positions_table" {
     "type": "STRING",
     "mode": "REQUIRED",
     "description": "GTFS ID of the next station the train will arrive at."
+  },
+  {
+    "name": "nextStpId",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "GTFS ID of the next stop the train will arrive at."
   },
   {
     "name": "nextStaNm",
@@ -146,9 +154,11 @@ EOF
 }
 
 resource "google_bigquery_table" "arrivals_table" {
-  dataset_id  = google_bigquery_dataset.raw_dataset.dataset_id
-  table_id    = "arrivals"
-  description = "Train arrival prediction data from CTA Train Tracker API"
+  dataset_id               = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id                 = "arrivals"
+  description              = "Train arrival prediction data from CTA Train Tracker API"
+  deletion_protection      = false
+  require_partition_filter = true
 
   time_partitioning {
     type          = "HOUR"
@@ -324,8 +334,34 @@ resource "google_storage_bucket_object" "gtfs-data-fetch-code" {
   bucket = google_storage_bucket.private-bucket.name
 }
 
+data "archive_file" "positions_fetch" {
+  type        = "zip"
+  source_dir  = "${path.module}/../src/positions_fetch"
+  output_path = "${path.module}/positions_fetch.zip"
+  excludes = [
+    "requirements-dev.txt",
+    "**/__pycache__/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+  ]
+}
+
+resource "google_storage_bucket_object" "positions-data-fetch-code" {
+  name   = "code/positions-fetch-${data.archive_file.positions_fetch.output_md5}.zip"
+  source = data.archive_file.positions_fetch.output_path
+  bucket = google_storage_bucket.private-bucket.name
+}
+
 ##################################################
-# Cloud Run Jobs & Cloud Run Functions
+# Secret Manager
+##################################################
+resource "google_secret_manager_regional_secret" "cta-api-key" {
+  secret_id = "cta-api-key"
+  location  = "us-central1"
+}
+
+##################################################
+# Cloud Run & Scheduler
 ##################################################
 resource "google_artifact_registry_repository" "functions-repo" {
   repository_id = "cloud-functions"
@@ -351,15 +387,28 @@ resource "google_artifact_registry_repository" "functions-repo" {
   }
 }
 
-resource "google_service_account" "gtfs-fetch-service-account" {
-  account_id   = "gtfs-fetch-service-account"
-  display_name = "Runtime service account for GTFS fetch function"
+resource "google_service_account" "cloud-function-service-account" {
+  account_id   = "cloud-function-service-account"
+  display_name = "Runtime service account for Cloud Functions"
 }
 
-resource "google_storage_bucket_iam_member" "gtfs_fetch_writer" {
+resource "google_storage_bucket_iam_member" "cloud-functions-bucket-writer" {
   bucket = google_storage_bucket.private-bucket.name
   role   = "roles/storage.objectUser"
-  member = "serviceAccount:${google_service_account.gtfs-fetch-service-account.email}"
+  member = "serviceAccount:${google_service_account.cloud-function-service-account.email}"
+}
+
+resource "google_bigquery_table_iam_member" "cloud-functions-bigquery-writer" {
+  dataset_id = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id   = google_bigquery_table.positions_table.table_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.cloud-function-service-account.email}"
+}
+
+resource "google_secret_manager_regional_secret_iam_member" "cloud-functions-secret-reader" {
+  secret_id = google_secret_manager_regional_secret.cta-api-key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.cloud-function-service-account.email}"
 }
 
 resource "google_cloudfunctions2_function" "gtfs-fetch" {
@@ -383,20 +432,54 @@ resource "google_cloudfunctions2_function" "gtfs-fetch" {
     max_instance_count    = 1
     available_memory      = "512M"
     timeout_seconds       = 300
-    service_account_email = google_service_account.gtfs-fetch-service-account.email
+    service_account_email = google_service_account.cloud-function-service-account.email
     environment_variables = {
       GCS_BUCKET = google_storage_bucket.private-bucket.name
     }
   }
 }
 
+resource "google_cloudfunctions2_function" "positions-fetch" {
+  name        = "positions-data-fetch"
+  description = "Function to fetch positions data from CTA Train Tracker API"
+  location    = "us-central1"
+
+  build_config {
+    runtime           = "python314"
+    entry_point       = "handler"
+    docker_repository = google_artifact_registry_repository.functions-repo.id
+    source {
+      storage_source {
+        bucket = google_storage_bucket.private-bucket.name
+        object = google_storage_bucket_object.positions-data-fetch-code.name
+      }
+    }
+  }
+
+  service_config {
+    max_instance_count    = 1
+    available_memory      = "512M"
+    timeout_seconds       = 60
+    service_account_email = google_service_account.cloud-function-service-account.email
+    environment_variables = {
+      GCS_BUCKET         = google_storage_bucket.private-bucket.name
+      CTA_API_KEY_SECRET = "${google_secret_manager_regional_secret.cta-api-key.name}/versions/latest"
+    }
+  }
+}
+
 resource "google_service_account" "scheduler-service-account" {
-  account_id = "gtfs-fetch-scheduler"
+  account_id = "cloud-functions-scheduler"
 }
 
 resource "google_cloud_run_service_iam_member" "scheduler-service-account" {
-  location = google_cloudfunctions2_function.gtfs-fetch.location
-  service  = google_cloudfunctions2_function.gtfs-fetch.service_config[0].service
+  for_each = {
+    "gtfs-fetch"      = google_cloudfunctions2_function.gtfs-fetch
+    "positions-fetch" = google_cloudfunctions2_function.positions-fetch
+  }
+
+  location = each.value.location
+  service  = each.value.service_config[0].service
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.scheduler-service-account.email}"
 }
@@ -413,6 +496,22 @@ resource "google_cloud_scheduler_job" "gtfs-fetch-scheduler" {
     oidc_token {
       service_account_email = google_service_account.scheduler-service-account.email
       audience              = google_cloudfunctions2_function.gtfs-fetch.service_config[0].uri
+    }
+  }
+}
+
+resource "google_cloud_scheduler_job" "positions-fetch-scheduler" {
+  name             = "positions-fetch-scheduler"
+  description      = "Scheduler job to trigger positions data fetch function every minute"
+  schedule         = "* * * * *"
+  attempt_deadline = "60s"
+
+  http_target {
+    http_method = "POST"
+    uri         = google_cloudfunctions2_function.positions-fetch.service_config[0].uri
+    oidc_token {
+      service_account_email = google_service_account.scheduler-service-account.email
+      audience              = google_cloudfunctions2_function.positions-fetch.service_config[0].uri
     }
   }
 }
