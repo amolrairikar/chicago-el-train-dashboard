@@ -1,5 +1,7 @@
 import json
+import logging
 import re
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -7,8 +9,11 @@ import locations_main as main
 import pytest
 import requests
 from flask import Flask
+from google.cloud.bigquery_storage_v1 import types as bq_types
 
 TF_PATH = Path(__file__).resolve().parents[2] / "infrastructure" / "main.tf"
+PROJECT = "test-project"
+DEFAULT_STREAM = f"projects/{PROJECT}/datasets/raw/tables/positions/streams/_default"
 SECRET_NAME = "projects/test/secrets/cta-api-key/versions/latest"
 
 
@@ -56,6 +61,45 @@ def positions_schema_columns():
 
 
 # --- fakes -------------------------------------------------------------------
+class FakeWriteClient:
+    """Stands in for BigQueryWriteClient; records each append as decoded rows."""
+
+    def __init__(self):
+        self.calls = []
+        self.response = bq_types.AppendRowsResponse()
+        self.error = None
+
+    def append_rows(self, requests, metadata=()):
+        if self.error:
+            raise self.error
+        for request in requests:
+            rows = [decode_row(row) for row in request.proto_rows.rows.serialized_rows]
+            self.calls.append(
+                {
+                    "stream": request.write_stream,
+                    "schema": request.proto_rows.writer_schema.proto_descriptor,
+                    "rows": rows,
+                    "metadata": metadata,
+                }
+            )
+        return iter([self.response])
+
+    def last(self):
+        call = self.calls[-1]
+        return call["stream"], call["rows"]
+
+
+def decode_row(serialized: bytes) -> dict:
+    message = main.RowMessage.FromString(serialized)
+    return {
+        field.name: getattr(message, field.name) for field in message.DESCRIPTOR.fields
+    }
+
+
+def row_error_response():
+    return bq_types.AppendRowsResponse(
+        row_errors=[bq_types.RowError(index=0, message="bad row")]
+    )
 
 
 class FakeResponse:
@@ -84,10 +128,14 @@ class FakeResponse:
 
 
 @pytest.fixture(autouse=True)
-def clear_api_key_cache():
+def clear_caches():
     main.get_api_key.cache_clear()
+    main.get_write_client.cache_clear()
+    main.get_project_id.cache_clear()
     yield
     main.get_api_key.cache_clear()
+    main.get_write_client.cache_clear()
+    main.get_project_id.cache_clear()
 
 
 @pytest.fixture
@@ -108,10 +156,10 @@ def secret(monkeypatch):
 
 @pytest.fixture
 def bq(monkeypatch):
-    """Fakes BigQuery; the returned client records insert calls."""
-    client = mock.Mock()
-    client.insert_rows_json.return_value = []
-    monkeypatch.setattr(main.bigquery, "Client", lambda: client)
+    """Fakes the Storage Write API; the returned client records appends."""
+    client = FakeWriteClient()
+    monkeypatch.setattr(main, "get_write_client", lambda: client)
+    monkeypatch.setattr(main.google.auth, "default", lambda: (None, PROJECT))
     monkeypatch.delenv("BQ_TABLE", raising=False)
     return client
 
@@ -381,24 +429,67 @@ def test_flatten_drops_fields_not_in_schema():
 # --- write_to_bigquery -------------------------------------------------------
 
 
-def test_write_inserts_rows_with_ids(bq):
+def test_write_appends_rows_to_default_stream(bq):
     rows = main.flatten_positions(make_ctatt())
     main.write_to_bigquery(rows, "raw.positions")
-    bq.insert_rows_json.assert_called_once_with(
-        "raw.positions",
-        rows,
-        row_ids=[
-            "2026-10-06T22:01:23+00:00-red-801",
-            "2026-10-06T22:01:23+00:00-red-802",
-            "2026-10-06T22:01:23+00:00-blue-101",
-        ],
+    (call,) = bq.calls
+    assert call["stream"] == DEFAULT_STREAM
+    # The routing header must name the stream for the bidirectional append.
+    assert call["metadata"] == (
+        ("x-goog-request-params", f"write_stream={DEFAULT_STREAM}"),
     )
+    assert call["schema"] == main.ROW_DESCRIPTOR
+    want = [{**row, "tmst": main._to_epoch_micros(row["tmst"])} for row in rows]
+    assert call["rows"] == want
 
 
-def test_write_raises_on_insert_errors(bq):
-    bq.insert_rows_json.return_value = [{"index": 0, "errors": ["bad row"]}]
+def test_write_raises_on_row_errors(bq):
+    bq.response = row_error_response()
     with pytest.raises(RuntimeError, match="bad row"):
         main.write_to_bigquery(main.flatten_positions(make_ctatt()), "raw.positions")
+
+
+def test_write_raises_on_append_error(bq):
+    bq.response = bq_types.AppendRowsResponse(
+        error={"code": 3, "message": "bad schema"}
+    )
+    with pytest.raises(RuntimeError, match="bad schema"):
+        main.write_to_bigquery(main.flatten_positions(make_ctatt()), "raw.positions")
+
+
+def test_row_descriptor_matches_table_schema():
+    fields = {field.name: field.type for field in main.ROW_DESCRIPTOR.field}
+    assert sorted(fields) == sorted(positions_schema_columns())
+    # TIMESTAMP columns take int64 epoch microseconds; the rest are STRING.
+    int64 = main._FIELD.TYPE_INT64
+    assert {name for name, kind in fields.items() if kind == int64} == {"tmst"}
+
+
+def test_to_epoch_micros():
+    assert main._to_epoch_micros("2026-10-07T02:40:29+00:00") == 1791340829000000
+
+
+@pytest.mark.parametrize(
+    ("table", "want"),
+    [
+        ("raw.positions", f"projects/{PROJECT}/datasets/raw/tables/positions"),
+        ("proj.other.positions", "projects/proj/datasets/other/tables/positions"),
+    ],
+)
+def test_table_path(bq, table, want):
+    assert main.table_path(table) == want
+
+
+@pytest.mark.parametrize("table", ["positions", "a.b.c.d"])
+def test_table_path_rejects_invalid_names(bq, table):
+    with pytest.raises(ValueError, match="Invalid BigQuery table name"):
+        main.table_path(table)
+
+
+def test_get_project_id_requires_project(monkeypatch):
+    monkeypatch.setattr(main.google.auth, "default", lambda: (None, None))
+    with pytest.raises(RuntimeError, match="project"):
+        main.get_project_id()
 
 
 # --- handler -----------------------------------------------------------------
@@ -408,8 +499,8 @@ def test_handler_success(secret, bq, stub_cta):
     calls = stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt()}))
     assert serve() == ("", 200)
     assert calls[0]["params"]["key"] == "test-key"
-    table, rows = bq.insert_rows_json.call_args.args
-    assert table == main.DEFAULT_BQ_TABLE
+    stream, rows = bq.last()
+    assert stream == DEFAULT_STREAM
     assert len(rows) == 3
 
 
@@ -417,7 +508,9 @@ def test_handler_uses_bq_table_env(secret, bq, stub_cta, monkeypatch):
     monkeypatch.setenv("BQ_TABLE", "proj.other.positions")
     stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt()}))
     assert serve() == ("", 200)
-    assert bq.insert_rows_json.call_args.args[0] == "proj.other.positions"
+    assert bq.last()[0] == (
+        "projects/proj/datasets/other/tables/positions/streams/_default"
+    )
 
 
 def test_handler_missing_secret_env(bq, stub_cta, monkeypatch):
@@ -425,7 +518,7 @@ def test_handler_missing_secret_env(bq, stub_cta, monkeypatch):
     calls = stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt()}))
     assert serve() == ("Misconfigured CTA_API_KEY_SECRET", 500)
     assert calls == []
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_secret_error(secret, bq, stub_cta):
@@ -433,13 +526,13 @@ def test_handler_secret_error(secret, bq, stub_cta):
     calls = stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt()}))
     assert serve() == ("Failed to read CTA API key", 500)
     assert calls == []
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_http_error(secret, bq, stub_cta):
     stub_cta(lambda: FakeResponse(503))
     assert serve() == ("Failed to fetch train positions", 502)
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_connection_error(secret, bq, stub_cta):
@@ -448,13 +541,13 @@ def test_handler_connection_error(secret, bq, stub_cta):
 
     stub_cta(fail)
     assert serve() == ("Failed to fetch train positions", 500)
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_invalid_json(secret, bq, stub_cta):
     stub_cta(lambda: FakeResponse(200, json_error=ValueError("not json")))
     assert serve() == ("Failed to fetch train positions", 500)
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 @pytest.mark.parametrize("err_cd", ["101", 500])
@@ -462,35 +555,35 @@ def test_handler_cta_api_error(secret, bq, stub_cta, err_cd):
     ctatt = make_ctatt(routes=[], err_cd=err_cd, err_nm="Invalid API key")
     stub_cta(lambda: FakeResponse(200, {"ctatt": ctatt}))
     assert serve() == ("CTA API returned an error", 502)
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_accepts_integer_zero_err_cd(secret, bq, stub_cta):
     stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt(err_cd=0)}))
     assert serve() == ("", 200)
-    bq.insert_rows_json.assert_called_once()
+    assert len(bq.calls) == 1
 
 
 def test_handler_parse_error(secret, bq, stub_cta):
     stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt(tmst="garbage")}))
     assert serve() == ("Failed to parse train positions", 500)
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_no_trains(secret, bq, stub_cta):
     stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt(routes=[])}))
     assert serve() == ("", 200)
-    bq.insert_rows_json.assert_not_called()
+    assert bq.calls == []
 
 
 def test_handler_bigquery_error(secret, bq, stub_cta):
-    bq.insert_rows_json.return_value = [{"index": 0, "errors": ["bad row"]}]
+    bq.response = row_error_response()
     stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt()}))
     assert serve() == ("Failed to write train positions", 500)
 
 
 def test_handler_bigquery_client_error(secret, bq, stub_cta):
-    bq.insert_rows_json.side_effect = RuntimeError("quota exceeded")
+    bq.error = RuntimeError("quota exceeded")
     stub_cta(lambda: FakeResponse(200, {"ctatt": make_ctatt()}))
     assert serve() == ("Failed to write train positions", 500)
 
@@ -500,3 +593,35 @@ def test_handler_reuses_cached_api_key(secret, bq, stub_cta):
     serve()
     serve()
     assert secret.access_secret_version.call_count == 1
+
+
+def _format(message: str, exc_info=None) -> str:
+    record = logging.LogRecord(
+        "urllib3.connectionpool", logging.WARNING, __file__, 1, message, None, exc_info
+    )
+    return main.RedactingFormatter(logging.BASIC_FORMAT).format(record)
+
+
+def test_redacting_formatter_masks_key_in_retry_warning():
+    url = "/api/1.0/ttpositions.aspx?mapid=40120&key=secret-key&outputType=JSON"
+    out = _format(f"Retrying (Retry(total=2)) after connection broken by 'x': {url}")
+    assert "secret-key" not in out
+    assert "key=[REDACTED]&outputType=JSON" in out
+
+
+def test_redacting_formatter_masks_key_in_traceback():
+    try:
+        raise requests.ConnectionError(
+            "Max retries exceeded with url: /api/1.0/ttpositions.aspx?key=secret-key "
+            "(Caused by ReadTimeoutError())"
+        )
+    except requests.ConnectionError:
+        out = _format("Error fetching", exc_info=sys.exc_info())
+    assert "secret-key" not in out
+    assert "key=[REDACTED] (Caused by" in out
+
+
+def test_redacting_formatter_leaves_other_text_alone():
+    assert _format("monkey=banana key-free") == (
+        "WARNING:urllib3.connectionpool:monkey=banana key-free"
+    )
