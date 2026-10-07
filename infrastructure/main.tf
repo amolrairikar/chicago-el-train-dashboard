@@ -172,19 +172,19 @@ resource "google_bigquery_table" "arrivals_table" {
     "name": "tmst",
     "type": "TIMESTAMP",
     "mode": "REQUIRED",
-    "description": "The timestamp at which the train position snapshot was generated, in ISO 8601 format."
+    "description": "The timestamp at which the train arrival snapshot was generated, in ISO 8601 format."
   },
   {
     "name": "errCd",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "Error code associated with the train position API response. Zero indicates no error."
+    "description": "Error code associated with the train arrival API response. Zero indicates no error."
   },
   {
     "name": "errNm",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "Error name associated with the train position API response. Null indicates no error."
+    "description": "Error name associated with the train arrival API response. Empty string indicates no error."
   },
   {
     "name": "staId",
@@ -205,10 +205,22 @@ resource "google_bigquery_table" "arrivals_table" {
     "description": "Name of the station which the arrival prediction is for."
   },
   {
+    "name": "stpDe",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Textual description of platform for which this prediction applies."
+  },
+  {
     "name": "rn",
     "type": "STRING",
     "mode": "REQUIRED",
     "description": "Run number corresponding to the train."
+  },
+  {
+    "name": "rt",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Textual, abbreviated route name of train being predicted for."
   },
   {
     "name": "destSt",
@@ -352,6 +364,24 @@ resource "google_storage_bucket_object" "positions-data-fetch-code" {
   bucket = google_storage_bucket.private-bucket.name
 }
 
+data "archive_file" "arrivals_fetch" {
+  type        = "zip"
+  source_dir  = "${path.module}/../src/arrivals_fetch"
+  output_path = "${path.module}/arrivals_fetch.zip"
+  excludes = [
+    "requirements-dev.txt",
+    "**/__pycache__/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+  ]
+}
+
+resource "google_storage_bucket_object" "arrivals-data-fetch-code" {
+  name   = "code/arrivals-fetch-${data.archive_file.arrivals_fetch.output_md5}.zip"
+  source = data.archive_file.arrivals_fetch.output_path
+  bucket = google_storage_bucket.private-bucket.name
+}
+
 ##################################################
 # Secret Manager
 ##################################################
@@ -399,8 +429,13 @@ resource "google_storage_bucket_iam_member" "cloud-functions-bucket-writer" {
 }
 
 resource "google_bigquery_table_iam_member" "cloud-functions-bigquery-writer" {
+  for_each = {
+    "positions" = google_bigquery_table.positions_table
+    "arrivals"  = google_bigquery_table.arrivals_table
+  }
+
   dataset_id = google_bigquery_dataset.raw_dataset.dataset_id
-  table_id   = google_bigquery_table.positions_table.table_id
+  table_id   = each.value.table_id
   role       = "roles/bigquery.dataEditor"
   member     = "serviceAccount:${google_service_account.cloud-function-service-account.email}"
 }
@@ -468,6 +503,35 @@ resource "google_cloudfunctions2_function" "positions-fetch" {
   }
 }
 
+resource "google_cloudfunctions2_function" "arrivals-fetch" {
+  name        = "arrivals-data-fetch"
+  description = "Function to fetch arrivals data from CTA Train Tracker API"
+  location    = "us-central1"
+
+  build_config {
+    runtime           = "python314"
+    entry_point       = "handler"
+    docker_repository = google_artifact_registry_repository.functions-repo.id
+    source {
+      storage_source {
+        bucket = google_storage_bucket.private-bucket.name
+        object = google_storage_bucket_object.arrivals-data-fetch-code.name
+      }
+    }
+  }
+
+  service_config {
+    max_instance_count    = 1
+    available_memory      = "512M"
+    timeout_seconds       = 120
+    service_account_email = google_service_account.cloud-function-service-account.email
+    environment_variables = {
+      GCS_BUCKET         = google_storage_bucket.private-bucket.name
+      CTA_API_KEY_SECRET = "${google_secret_manager_regional_secret.cta-api-key.name}/versions/latest"
+    }
+  }
+}
+
 resource "google_service_account" "scheduler-service-account" {
   account_id = "cloud-functions-scheduler"
 }
@@ -476,6 +540,7 @@ resource "google_cloud_run_service_iam_member" "scheduler-service-account" {
   for_each = {
     "gtfs-fetch"      = google_cloudfunctions2_function.gtfs-fetch
     "positions-fetch" = google_cloudfunctions2_function.positions-fetch
+    "arrivals-fetch"  = google_cloudfunctions2_function.arrivals-fetch
   }
 
   location = each.value.location
@@ -504,7 +569,7 @@ resource "google_cloud_scheduler_job" "positions-fetch-scheduler" {
   name             = "positions-fetch-scheduler"
   description      = "Scheduler job to trigger positions data fetch function every minute"
   schedule         = "* * * * *"
-  attempt_deadline = "60s"
+  attempt_deadline = "70s"
 
   http_target {
     http_method = "POST"
@@ -512,6 +577,22 @@ resource "google_cloud_scheduler_job" "positions-fetch-scheduler" {
     oidc_token {
       service_account_email = google_service_account.scheduler-service-account.email
       audience              = google_cloudfunctions2_function.positions-fetch.service_config[0].uri
+    }
+  }
+}
+
+resource "google_cloud_scheduler_job" "arrivals-fetch-scheduler" {
+  name             = "arrivals-fetch-scheduler"
+  description      = "Scheduler job to trigger arrivals data fetch function every 2 minutes"
+  schedule         = "*/2 * * * *"
+  attempt_deadline = "130s"
+
+  http_target {
+    http_method = "POST"
+    uri         = google_cloudfunctions2_function.arrivals-fetch.service_config[0].uri
+    oidc_token {
+      service_account_email = google_service_account.scheduler-service-account.email
+      audience              = google_cloudfunctions2_function.arrivals-fetch.service_config[0].uri
     }
   }
 }

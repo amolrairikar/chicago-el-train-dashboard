@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "97b00bbf1cb81f899ed3e7f8fdd19f41a29496f7ed1c71c825c7b98002c4f70d"
+            "sha256": "a4bdd3cf892f7ac00c25e54d3706535adae0f14965837756b0793ad7a70d6cb1"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -450,14 +450,14 @@
             "markers": "python_version >= '3.10'",
             "version": "==2.60.0"
         },
-        "google-cloud-bigquery": {
+        "google-cloud-bigquery-storage": {
             "hashes": [
-                "sha256:c5564a58fc3c99b003cd334a8f302c6224bd34cb55c87476a3c445be1d00538b",
-                "sha256:ee0e73d06a624c26445458e75f04deed894ed50a0c46bdc876f30c50e05ec6c2"
+                "sha256:98f6c870f4a61f73d29ee12e30e64e9bc651ab8aa6d487c0c13c296f67878e7c",
+                "sha256:eebb5751125eb692cde0a7f22b9432eb656662daa95bde9439ad3252d5e19cc5"
             ],
             "index": "pypi",
             "markers": "python_version >= '3.10'",
-            "version": "==3.46.1"
+            "version": "==2.42.0"
         },
         "google-cloud-core": {
             "hashes": [
@@ -883,14 +883,6 @@
             "markers": "python_version >= '3.10'",
             "version": "==3.0"
         },
-        "python-dateutil": {
-            "hashes": [
-                "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3",
-                "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
-            ],
-            "markers": "python_version >= '2.7' and python_version not in '3.0, 3.1, 3.2'",
-            "version": "==2.9.0.post0"
-        },
         "requests": {
             "hashes": [
                 "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
@@ -899,14 +891,6 @@
             "index": "pypi",
             "markers": "python_version >= '3.10'",
             "version": "==2.34.2"
-        },
-        "six": {
-            "hashes": [
-                "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
-                "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"
-            ],
-            "markers": "python_version >= '2.7' and python_version not in '3.0, 3.1, 3.2'",
-            "version": "==1.17.0"
         },
         "starlette": {
             "hashes": [
