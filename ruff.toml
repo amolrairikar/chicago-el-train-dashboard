@@ -1,0 +1,3 @@
+[lint.isort]
+# src/common ships inside each function zip as a top-level package.
+known-first-party = ["common"]

@@ -159,20 +159,6 @@ def serve():
         return main.handler(request)
 
 
-# --- build_session -----------------------------------------------------------
-
-
-def test_session_has_retries_configured():
-    session = main.build_session()
-    for prefix in ("https://", "http://"):
-        retry = session.get_adapter(prefix + "example.com").max_retries
-        assert retry.total == 3
-        assert retry.backoff_factor == 1
-        assert {500, 502, 503, 504, 429} <= set(retry.status_forcelist)
-        assert "GET" in retry.allowed_methods
-        assert retry.raise_on_status is False
-
-
 # --- is_gtfs_updated ---------------------------------------------------------
 
 

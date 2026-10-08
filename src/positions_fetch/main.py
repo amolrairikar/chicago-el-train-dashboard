@@ -1,27 +1,20 @@
-import functools
 import logging
 import os
-import re
-from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import functions_framework
-import google.auth
 import requests
 from flask import Request
-from google.cloud import bigquery_storage_v1, secretmanager
-from google.cloud.bigquery_storage_v1 import types as bq_types
-from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from common.bigquery import RowSchema, write_to_bigquery
+from common.cta import as_list, fetch_ctatt, to_str, to_utc_iso
+from common.http import build_session
+from common.logging_setup import configure_logging
+from common.secrets import get_api_key
 
 POSITIONS_URL = "https://lapi.transitchicago.com/api/1.0/ttpositions.aspx"
 ROUTES = ["Blue", "Red", "Brn", "G", "Org", "P", "Pink", "Y"]
 DEFAULT_BQ_TABLE = "raw.positions"
 REQUEST_TIMEOUT = (3, 8)  # (connect, read) timeouts in seconds
-# CTA timestamps are Chicago local time with no UTC offset.
-CTA_TZ = ZoneInfo("America/Chicago")
-EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 TRAIN_FIELDS = (
     "rn",
     "destSt",
@@ -39,94 +32,13 @@ TRAIN_FIELDS = (
     "lon",
     "heading",
 )
+ROW_SCHEMA = RowSchema("PositionRow", ("errCd", "errNm", "name", *TRAIN_FIELDS))
 
-# Matches the API key in a request URL's query string, e.g. "?mapid=1&key=abc".
-API_KEY_PATTERN = re.compile(r"(?<![A-Za-z])(key=)[^&\s'\"]+")
-
-
-class RedactingFormatter(logging.Formatter):
-    """Masks the CTA API key in log output.
-
-    The key must be sent as a query parameter, so request URLs carrying it can
-    surface in urllib3 retry warnings and in connection error tracebacks.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        return API_KEY_PATTERN.sub(r"\1[REDACTED]", super().format(record))
-
-
-_log_handler = logging.StreamHandler()
-_log_handler.setFormatter(RedactingFormatter(logging.BASIC_FORMAT))
-logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
+configure_logging()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
-def _build_row_descriptor() -> descriptor_pb2.DescriptorProto:
-    """Describes a raw.positions row for the Storage Write API.
-
-    TIMESTAMP columns are sent as int64 microseconds since the epoch; every other
-    column is a STRING.
-    """
-    descriptor = descriptor_pb2.DescriptorProto(name="PositionRow")
-    for number, name in enumerate(("tmst", *STRING_COLUMNS), start=1):
-        descriptor.field.add(
-            name=name,
-            number=number,
-            type=_FIELD.TYPE_INT64 if name == "tmst" else _FIELD.TYPE_STRING,
-            label=_FIELD.LABEL_OPTIONAL,
-        )
-    return descriptor
-
-
-def _build_row_class(descriptor: descriptor_pb2.DescriptorProto) -> type:
-    # A private pool keeps this message from clashing with other modules' types.
-    pool = descriptor_pool.DescriptorPool()
-    pool.Add(
-        descriptor_pb2.FileDescriptorProto(
-            name="positions_row.proto", syntax="proto2", message_type=[descriptor]
-        )
-    )
-    return message_factory.GetMessageClass(pool.FindMessageTypeByName("PositionRow"))
-
-
-_FIELD = descriptor_pb2.FieldDescriptorProto
-STRING_COLUMNS = ("errCd", "errNm", "name", *TRAIN_FIELDS)
-ROW_DESCRIPTOR = _build_row_descriptor()
-RowMessage = _build_row_class(ROW_DESCRIPTOR)
-
-
-def build_session() -> requests.Session:
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET"}),
-        # Return the final response instead of raising so its status can be reported.
-        raise_on_status=False,
-    )
-    session = requests.Session()
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    session.mount("http://", HTTPAdapter(max_retries=retry))
-    return session
-
-
 http_session = build_session()
-
-
-@functools.cache
-def get_write_client() -> bigquery_storage_v1.BigQueryWriteClient:
-    """Builds the Storage Write client once per instance so warm invocations reuse it."""
-    return bigquery_storage_v1.BigQueryWriteClient()
-
-
-@functools.cache
-def get_project_id() -> str:
-    """Resolves the project for table names given without one, e.g. raw.positions."""
-    _, project = google.auth.default()
-    if not project:
-        raise RuntimeError("Could not determine the Google Cloud project")
-    return project
 
 
 @functions_framework.http
@@ -169,7 +81,7 @@ def handler(request: Request):
         return "", 200
 
     try:
-        write_to_bigquery(rows, table)
+        write_to_bigquery(rows, table, ROW_SCHEMA)
     except Exception:
         logger.exception("Error writing train positions to BigQuery")
         return "Failed to write train positions", 500
@@ -177,117 +89,26 @@ def handler(request: Request):
     return "", 200
 
 
-@functools.cache
-def get_api_key(secret_name: str) -> str:
-    """Reads the CTA API key, cached so warm instances skip Secret Manager."""
-    # Regional secrets are only served from their region's endpoint, e.g.
-    # projects/<p>/locations/us-central1/secrets/<s>/versions/<v>.
-    parts = secret_name.split("/")
-    client_options = None
-    if len(parts) > 3 and parts[2] == "locations":
-        client_options = {
-            "api_endpoint": f"secretmanager.{parts[3]}.rep.googleapis.com"
-        }
-    client = secretmanager.SecretManagerServiceClient(client_options=client_options)
-    response = client.access_secret_version(name=secret_name)
-    return response.payload.data.decode("utf-8").strip()
-
-
 def fetch_positions(api_key: str) -> dict:
     """Returns the `ctatt` body of the train positions response."""
     params = {"rt": ROUTES, "key": api_key, "outputType": "JSON"}
-    # The request URL carries the API key; RedactingFormatter masks it in logs.
-    with http_session.get(
-        POSITIONS_URL, params=params, timeout=REQUEST_TIMEOUT
-    ) as resp:
-        if resp.status_code != 200:
-            raise requests.HTTPError(
-                f"unexpected status fetching train positions: "
-                f"{resp.status_code} {resp.reason}",
-                response=resp,
-            )
-        return resp.json()["ctatt"]
-
-
-def _to_str(value) -> str:
-    return "" if value is None else str(value)
-
-
-def _to_utc_iso(cta_timestamp: str) -> str:
-    local = datetime.fromisoformat(cta_timestamp).replace(tzinfo=CTA_TZ)
-    return local.astimezone(UTC).isoformat()
+    return fetch_ctatt(
+        http_session, POSITIONS_URL, params, REQUEST_TIMEOUT, "train positions"
+    )
 
 
 def flatten_positions(ctatt: dict) -> list[dict]:
     """Produces one row per train, matching the raw.positions schema."""
     snapshot = {
-        "tmst": _to_utc_iso(ctatt["tmst"]),
-        "errCd": _to_str(ctatt.get("errCd")),
-        "errNm": _to_str(ctatt.get("errNm")),
+        "tmst": to_utc_iso(ctatt["tmst"]),
+        "errCd": to_str(ctatt.get("errCd")),
+        "errNm": to_str(ctatt.get("errNm")),
     }
 
-    routes = ctatt.get("route") or []
-    # The JSON output is converted from XML, so a single element is returned as
-    # an object rather than a one-item list.
-    if isinstance(routes, dict):
-        routes = [routes]
-
     rows = []
-    for route in routes:
-        trains = route.get("train") or []
-        if isinstance(trains, dict):
-            trains = [trains]
-        for train in trains:
-            row = {**snapshot, "name": _to_str(route.get("@name"))}
-            row.update({field: _to_str(train.get(field)) for field in TRAIN_FIELDS})
+    for route in as_list(ctatt.get("route")):
+        for train in as_list(route.get("train")):
+            row = {**snapshot, "name": to_str(route.get("@name"))}
+            row.update({field: to_str(train.get(field)) for field in TRAIN_FIELDS})
             rows.append(row)
     return rows
-
-
-def _to_epoch_micros(iso_timestamp: str) -> int:
-    return (datetime.fromisoformat(iso_timestamp) - EPOCH) // timedelta(microseconds=1)
-
-
-def serialize_row(row: dict) -> bytes:
-    message = RowMessage(tmst=_to_epoch_micros(row["tmst"]))
-    for column in STRING_COLUMNS:
-        setattr(message, column, row[column])
-    return message.SerializeToString()
-
-
-def table_path(table: str) -> str:
-    """Expands "dataset.table" or "project.dataset.table" to a resource path."""
-    parts = table.split(".")
-    if len(parts) == 2:
-        parts.insert(0, get_project_id())
-    if len(parts) != 3:
-        raise ValueError(f"Invalid BigQuery table name: {table!r}")
-    return bigquery_storage_v1.BigQueryWriteClient.table_path(*parts)
-
-
-def write_to_bigquery(rows: list[dict], table: str) -> None:
-    """Appends rows through the Storage Write API's default stream.
-
-    The default stream commits each append immediately with at-least-once
-    semantics. It is billed far below legacy streaming inserts and has a 2 TiB
-    monthly free tier.
-    """
-    stream = f"{table_path(table)}/streams/_default"
-    request = bq_types.AppendRowsRequest(
-        write_stream=stream,
-        proto_rows=bq_types.AppendRowsRequest.ProtoData(
-            writer_schema=bq_types.ProtoSchema(proto_descriptor=ROW_DESCRIPTOR),
-            rows=bq_types.ProtoRows(serialized_rows=[serialize_row(r) for r in rows]),
-        ),
-    )
-    # append_rows is a bidirectional stream, so the client can't derive the
-    # routing header from the request; it has to be supplied here.
-    responses = get_write_client().append_rows(
-        iter([request]),
-        metadata=(("x-goog-request-params", f"write_stream={stream}"),),
-    )
-    for response in responses:
-        if response.row_errors:
-            raise RuntimeError(f"BigQuery row errors: {list(response.row_errors)}")
-        if response.error.code:
-            raise RuntimeError(f"BigQuery append error: {response.error.message}")

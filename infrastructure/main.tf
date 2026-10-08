@@ -328,58 +328,43 @@ resource "google_storage_bucket" "private-bucket" {
   }
 }
 
-data "archive_file" "gtfs_fetch" {
+locals {
+  src_dir      = "${path.module}/../src"
+  common_files = fileset("${local.src_dir}/common", "**/*.py")
+  functions = {
+    gtfs_fetch      = "gtfs-fetch"
+    positions_fetch = "positions-fetch"
+    arrivals_fetch  = "arrivals-fetch"
+  }
+}
+
+data "archive_file" "function" {
+  for_each    = local.functions
   type        = "zip"
-  source_dir  = "${path.module}/../src/gtfs_fetch"
-  output_path = "${path.module}/gtfs_fetch.zip"
-  excludes = [
-    "requirements-dev.txt",
-    "**/__pycache__/**",
-    ".pytest_cache/**",
-    ".ruff_cache/**",
-  ]
+  output_path = "${path.module}/${each.key}.zip"
+
+  dynamic "source" {
+    for_each = setunion(fileset("${local.src_dir}/${each.key}", "*.py"), ["requirements.txt"])
+    content {
+      content  = file("${local.src_dir}/${each.key}/${source.value}")
+      filename = source.value
+    }
+  }
+
+  dynamic "source" {
+    for_each = local.common_files
+    content {
+      content  = file("${local.src_dir}/common/${source.value}")
+      filename = "common/${source.value}"
+    }
+  }
 }
 
-resource "google_storage_bucket_object" "gtfs-data-fetch-code" {
-  name   = "code/gtfs-fetch-${data.archive_file.gtfs_fetch.output_md5}.zip"
-  source = data.archive_file.gtfs_fetch.output_path
-  bucket = google_storage_bucket.private-bucket.name
-}
-
-data "archive_file" "positions_fetch" {
-  type        = "zip"
-  source_dir  = "${path.module}/../src/positions_fetch"
-  output_path = "${path.module}/positions_fetch.zip"
-  excludes = [
-    "requirements-dev.txt",
-    "**/__pycache__/**",
-    ".pytest_cache/**",
-    ".ruff_cache/**",
-  ]
-}
-
-resource "google_storage_bucket_object" "positions-data-fetch-code" {
-  name   = "code/positions-fetch-${data.archive_file.positions_fetch.output_md5}.zip"
-  source = data.archive_file.positions_fetch.output_path
-  bucket = google_storage_bucket.private-bucket.name
-}
-
-data "archive_file" "arrivals_fetch" {
-  type        = "zip"
-  source_dir  = "${path.module}/../src/arrivals_fetch"
-  output_path = "${path.module}/arrivals_fetch.zip"
-  excludes = [
-    "requirements-dev.txt",
-    "**/__pycache__/**",
-    ".pytest_cache/**",
-    ".ruff_cache/**",
-  ]
-}
-
-resource "google_storage_bucket_object" "arrivals-data-fetch-code" {
-  name   = "code/arrivals-fetch-${data.archive_file.arrivals_fetch.output_md5}.zip"
-  source = data.archive_file.arrivals_fetch.output_path
-  bucket = google_storage_bucket.private-bucket.name
+resource "google_storage_bucket_object" "function-code" {
+  for_each = local.functions
+  name     = "code/${each.value}-${data.archive_file.function[each.key].output_md5}.zip"
+  source   = data.archive_file.function[each.key].output_path
+  bucket   = google_storage_bucket.private-bucket.name
 }
 
 ##################################################
@@ -458,7 +443,7 @@ resource "google_cloudfunctions2_function" "gtfs-fetch" {
     source {
       storage_source {
         bucket = google_storage_bucket.private-bucket.name
-        object = google_storage_bucket_object.gtfs-data-fetch-code.name
+        object = google_storage_bucket_object.function-code["gtfs_fetch"].name
       }
     }
   }
@@ -486,7 +471,7 @@ resource "google_cloudfunctions2_function" "positions-fetch" {
     source {
       storage_source {
         bucket = google_storage_bucket.private-bucket.name
-        object = google_storage_bucket_object.positions-data-fetch-code.name
+        object = google_storage_bucket_object.function-code["positions_fetch"].name
       }
     }
   }
@@ -515,7 +500,7 @@ resource "google_cloudfunctions2_function" "arrivals-fetch" {
     source {
       storage_source {
         bucket = google_storage_bucket.private-bucket.name
-        object = google_storage_bucket_object.arrivals-data-fetch-code.name
+        object = google_storage_bucket_object.function-code["arrivals_fetch"].name
       }
     }
   }

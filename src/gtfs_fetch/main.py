@@ -12,8 +12,9 @@ import functions_framework
 import requests
 from flask import Request
 from google.cloud import storage
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from common.http import build_session
+from common.logging_setup import configure_logging
 
 GTFS_URL = "https://www.transitchicago.com/downloads/sch_data/google_transit.zip"
 GTFS_OBJECT_KEY = "gtfs/google_transit.zip"
@@ -23,25 +24,9 @@ LAST_MODIFIED_KEY = "source-last-modified"
 REQUEST_TIMEOUT = (10, 60)  # (connect, read) timeouts in seconds
 CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-def build_session() -> requests.Session:
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET"}),
-        # Return the final response instead of raising so its status can be reported.
-        raise_on_status=False,
-    )
-    session = requests.Session()
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    session.mount("http://", HTTPAdapter(max_retries=retry))
-    return session
-
 
 http_session = build_session()
 
