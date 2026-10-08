@@ -1,7 +1,5 @@
 import json
-import logging
 import re
-import sys
 import threading
 import time
 from pathlib import Path
@@ -12,6 +10,9 @@ import pytest
 import requests
 from flask import Flask
 from google.cloud.bigquery_storage_v1 import types as bq_types
+from google.protobuf import descriptor_pb2
+
+from common import bigquery, secrets
 
 TF_PATH = Path(__file__).resolve().parents[2] / "infrastructure" / "main.tf"
 PROJECT = "test-project"
@@ -111,7 +112,7 @@ class FakeWriteClient:
 
 
 def decode_row(serialized: bytes) -> dict:
-    message = main.RowMessage.FromString(serialized)
+    message = main.ROW_SCHEMA.message_class.FromString(serialized)
     return {
         field.name: getattr(message, field.name) for field in message.DESCRIPTOR.fields
     }
@@ -150,16 +151,10 @@ class FakeResponse:
 
 @pytest.fixture(autouse=True)
 def clear_caches():
-    main.get_api_key.cache_clear()
     main._load_station_ids.cache_clear()
-    main.get_write_client.cache_clear()
-    main.get_project_id.cache_clear()
     main.get_storage_client.cache_clear()
     yield
-    main.get_api_key.cache_clear()
     main._load_station_ids.cache_clear()
-    main.get_write_client.cache_clear()
-    main.get_project_id.cache_clear()
     main.get_storage_client.cache_clear()
 
 
@@ -174,7 +169,9 @@ def secret(monkeypatch):
         client.init_kwargs.append(kwargs)
         return client
 
-    monkeypatch.setattr(main.secretmanager, "SecretManagerServiceClient", make_client)
+    monkeypatch.setattr(
+        secrets.secretmanager, "SecretManagerServiceClient", make_client
+    )
     monkeypatch.setenv("CTA_API_KEY_SECRET", SECRET_NAME)
     return client
 
@@ -195,8 +192,8 @@ def gcs(monkeypatch):
 def bq(monkeypatch):
     """Fakes the Storage Write API; the returned client records appends."""
     client = FakeWriteClient()
-    monkeypatch.setattr(main, "get_write_client", lambda: client)
-    monkeypatch.setattr(main.google.auth, "default", lambda: (None, PROJECT))
+    monkeypatch.setattr(bigquery, "get_write_client", lambda: client)
+    monkeypatch.setattr(bigquery.google.auth, "default", lambda: (None, PROJECT))
     monkeypatch.delenv("BQ_TABLE", raising=False)
     return client
 
@@ -229,53 +226,10 @@ def serve():
         return main.handler(request)
 
 
-# --- build_session -----------------------------------------------------------
-
-
-def test_session_has_retries_configured():
-    session = main.build_session()
+def test_session_pool_matches_worker_count():
     for prefix in ("https://", "http://"):
-        adapter = session.get_adapter(prefix + "example.com")
-        retry = adapter.max_retries
-        assert retry.total == 3
-        assert retry.backoff_factor == 1
-        assert {500, 502, 503, 504, 429} <= set(retry.status_forcelist)
-        assert "GET" in retry.allowed_methods
-        assert retry.raise_on_status is False
+        adapter = main.http_session.get_adapter(prefix + "example.com")
         assert adapter._pool_maxsize == main.MAX_WORKERS
-
-
-# --- get_api_key -------------------------------------------------------------
-
-
-def test_get_api_key_reads_and_strips(secret):
-    assert main.get_api_key(SECRET_NAME) == "test-key"
-    secret.access_secret_version.assert_called_once_with(name=SECRET_NAME)
-
-
-def test_get_api_key_is_cached(secret):
-    main.get_api_key(SECRET_NAME)
-    main.get_api_key(SECRET_NAME)
-    assert secret.access_secret_version.call_count == 1
-
-
-def test_get_api_key_does_not_cache_failures(secret):
-    secret.access_secret_version.side_effect = [RuntimeError("boom"), mock.DEFAULT]
-    with pytest.raises(RuntimeError):
-        main.get_api_key(SECRET_NAME)
-    assert main.get_api_key(SECRET_NAME) == "test-key"
-
-
-def test_get_api_key_regional_secret_uses_regional_endpoint(secret):
-    name = "projects/test/locations/us-central1/secrets/cta-api-key/versions/latest"
-    main.get_api_key(name)
-    assert secret.init_kwargs == [
-        {
-            "client_options": {
-                "api_endpoint": "secretmanager.us-central1.rep.googleapis.com"
-            }
-        }
-    ]
 
 
 # --- get_station_ids ---------------------------------------------------------
@@ -460,22 +414,6 @@ def test_fetch_all_deadline_cancels_queued_batches(stub_cta, monkeypatch):
     assert len(calls) == 1  # The queued batches never started.
 
 
-# --- _to_utc_iso -------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("local", "want"),
-    [
-        # Central Daylight Time (UTC-5)
-        ("2026-10-06T21:40:29", "2026-10-07T02:40:29+00:00"),
-        # Central Standard Time (UTC-6)
-        ("2026-01-15T08:00:00", "2026-01-15T14:00:00+00:00"),
-    ],
-)
-def test_to_utc_iso(local, want):
-    assert main._to_utc_iso(local) == want
-
-
 # --- flatten_arrivals --------------------------------------------------------
 
 
@@ -559,65 +497,24 @@ def test_flatten_drops_fields_not_in_schema():
 
 def test_write_appends_rows_to_default_stream(bq):
     rows = main.flatten_arrivals(make_ctatt())
-    main.write_to_bigquery(rows, "raw.arrivals")
+    main.write_to_bigquery(rows, "raw.arrivals", main.ROW_SCHEMA)
     (call,) = bq.calls
     assert call["stream"] == DEFAULT_STREAM
     # The routing header must name the stream for the bidirectional append.
     assert call["metadata"] == (
         ("x-goog-request-params", f"write_stream={DEFAULT_STREAM}"),
     )
-    assert call["schema"] == main.ROW_DESCRIPTOR
-    want = [{**row, "tmst": main._to_epoch_micros(row["tmst"])} for row in rows]
+    assert call["schema"] == main.ROW_SCHEMA.descriptor
+    want = [{**row, "tmst": bigquery.to_epoch_micros(row["tmst"])} for row in rows]
     assert call["rows"] == want
 
 
-def test_write_raises_on_row_errors(bq):
-    bq.response = row_error_response()
-    with pytest.raises(RuntimeError, match="bad row"):
-        main.write_to_bigquery(main.flatten_arrivals(make_ctatt()), "raw.arrivals")
-
-
-def test_write_raises_on_append_error(bq):
-    bq.response = bq_types.AppendRowsResponse(
-        error={"code": 3, "message": "bad schema"}
-    )
-    with pytest.raises(RuntimeError, match="bad schema"):
-        main.write_to_bigquery(main.flatten_arrivals(make_ctatt()), "raw.arrivals")
-
-
 def test_row_descriptor_matches_table_schema():
-    fields = {field.name: field.type for field in main.ROW_DESCRIPTOR.field}
+    fields = {field.name: field.type for field in main.ROW_SCHEMA.descriptor.field}
     assert sorted(fields) == sorted(arrivals_schema_columns())
     # TIMESTAMP columns take int64 epoch microseconds; the rest are STRING.
-    int64 = main._FIELD.TYPE_INT64
+    int64 = descriptor_pb2.FieldDescriptorProto.TYPE_INT64
     assert {name for name, kind in fields.items() if kind == int64} == {"tmst"}
-
-
-def test_to_epoch_micros():
-    assert main._to_epoch_micros("2026-10-07T02:40:29+00:00") == 1791340829000000
-
-
-@pytest.mark.parametrize(
-    ("table", "want"),
-    [
-        ("raw.arrivals", f"projects/{PROJECT}/datasets/raw/tables/arrivals"),
-        ("proj.other.arrivals", "projects/proj/datasets/other/tables/arrivals"),
-    ],
-)
-def test_table_path(bq, table, want):
-    assert main.table_path(table) == want
-
-
-@pytest.mark.parametrize("table", ["arrivals", "a.b.c.d"])
-def test_table_path_rejects_invalid_names(bq, table):
-    with pytest.raises(ValueError, match="Invalid BigQuery table name"):
-        main.table_path(table)
-
-
-def test_get_project_id_requires_project(monkeypatch):
-    monkeypatch.setattr(main.google.auth, "default", lambda: (None, None))
-    with pytest.raises(RuntimeError, match="project"):
-        main.get_project_id()
 
 
 # --- handler -----------------------------------------------------------------
@@ -725,35 +622,3 @@ def test_handler_reuses_caches(secret, gcs, bq, stub_cta):
     assert secret.access_secret_version.call_count == 1
     download = gcs.bucket.return_value.blob.return_value.download_as_text
     assert download.call_count == 1
-
-
-def _format(message: str, exc_info=None) -> str:
-    record = logging.LogRecord(
-        "urllib3.connectionpool", logging.WARNING, __file__, 1, message, None, exc_info
-    )
-    return main.RedactingFormatter(logging.BASIC_FORMAT).format(record)
-
-
-def test_redacting_formatter_masks_key_in_retry_warning():
-    url = "/api/1.0/ttarrivals.aspx?mapid=40120&key=secret-key&outputType=JSON"
-    out = _format(f"Retrying (Retry(total=2)) after connection broken by 'x': {url}")
-    assert "secret-key" not in out
-    assert "key=[REDACTED]&outputType=JSON" in out
-
-
-def test_redacting_formatter_masks_key_in_traceback():
-    try:
-        raise requests.ConnectionError(
-            "Max retries exceeded with url: /api/1.0/ttarrivals.aspx?key=secret-key "
-            "(Caused by ReadTimeoutError())"
-        )
-    except requests.ConnectionError:
-        out = _format("Error fetching", exc_info=sys.exc_info())
-    assert "secret-key" not in out
-    assert "key=[REDACTED] (Caused by" in out
-
-
-def test_redacting_formatter_leaves_other_text_alone():
-    assert _format("monkey=banana key-free") == (
-        "WARNING:urllib3.connectionpool:monkey=banana key-free"
-    )
