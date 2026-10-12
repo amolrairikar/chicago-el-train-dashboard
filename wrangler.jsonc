@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "web/node_modules/wrangler/config-schema.json",
   // Must match the Worker's name in the Cloudflare dashboard.
   "name": "chicago-el-train-dashboard",
   "compatibility_date": "2026-10-12",
