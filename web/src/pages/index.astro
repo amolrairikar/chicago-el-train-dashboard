@@ -1,0 +1,83 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  title="Service metrics"
+  description="Train positions, arrival predictions and feed health across all eight CTA 'L' lines."
+>
+  <section class="controls" aria-label="Filters">
+    <div class="ctl"><span class="ctl-l">Time of day</span><div class="seg" id="parts"></div></div>
+    <div class="ctl"><span class="ctl-l">Line</span><div class="seg" id="lines"></div></div>
+  </section>
+
+  <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+
+  <div class="row a">
+    <section class="panel">
+      <h2>Trains in service</h2>
+      <div class="mapwrap" id="map"></div>
+      <div class="maplegend">
+        <span><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="var(--muted)"/></svg> Train on time</span>
+        <span><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" style="vertical-align:-4px"><circle cx="9" cy="9" r="8" fill="none" stroke="var(--bad)" stroke-width="1.5" opacity=".6"/><circle cx="9" cy="9" r="4.5" fill="var(--muted)"/></svg> Flagged delayed (isDly)</span>
+      </div>
+      <p class="asof">Data as of: 5:42 PM</p>
+    </section>
+
+    <div class="stack">
+      <section class="panel">
+        <h2>Line scorecard</h2>
+        <p class="hint">Select a row to filter the whole dashboard to that line.</p>
+        <div class="scroll"><table id="score"></table></div>
+      </section>
+
+      <section class="panel">
+        <h2>By hour of day</h2>
+        <div class="tabs" id="tabs">
+          <button type="button" data-tab="dl">Delay rate</button>
+          <button type="button" data-tab="head">Headway</button>
+          <button type="button" data-tab="trains">Trains in service</button>
+        </div>
+        <div class="chartbox" id="chart"></div>
+        <div class="legend" id="legend"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row b">
+    <section class="panel">
+      <h2>Delay rate by line and hour</h2>
+      <div class="chartbox" id="heat"></div>
+    </section>
+  </div>
+
+  <div class="row c">
+    <section class="panel">
+      <h2>Line/station watchlist</h2>
+      <p class="hint">Lines at stations with the highest share of delayed predictions in the selected period.</p>
+      <div class="scroll"><table id="stations"></table></div>
+    </section>
+    <section class="panel">
+      <h2>Feed health</h2>
+      <div id="health"></div>
+    </section>
+  </div>
+
+</Base>
+
+<style is:global>
+  .stack{display:grid;gap:12px;min-width:0;align-content:start}
+  @media(min-width:1000px){
+    .row.a{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+    .row.c{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+  }
+  .mini{display:inline-block;width:36px;height:6px;background:var(--soft);border-radius:3px;margin-left:6px;vertical-align:middle;overflow:hidden}
+  .mini b{display:block;height:100%;background:var(--bad)}
+  .ax2 .t-bad{fill:var(--bad)} .ax2 .t-good{fill:var(--good)} .ax2 .t-mut{fill:var(--muted)}
+  .lbl{font:11px var(--ui);fill:var(--muted);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
+  .mapwrap svg{display:block;width:100%;height:auto;max-width:520px;margin:0 auto}
+  .maplegend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--muted);margin-top:8px}
+  .asof{font-size:12.5px;color:var(--muted);margin:6px 0 0}
+</style>
+
+<script src="../scripts/service.js"></script>

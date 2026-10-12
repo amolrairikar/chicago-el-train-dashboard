@@ -1,0 +1,77 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  title="Service trends"
+  description="Daily rollups of CTA 'L' service by line and time of day."
+>
+  <section class="controls" aria-label="Filters">
+    <div class="ctl"><span class="ctl-l">Date range</span><div class="seg" id="ranges"></div></div>
+    <div class="ctl"><span class="ctl-l">Days</span><div class="seg" id="daytypes"></div></div>
+    <div class="ctl"><span class="ctl-l">Time of day</span><div class="seg" id="dps"></div></div>
+    <div class="ctl"><span class="ctl-l">Line</span><div class="seg" id="lines"></div></div>
+  </section>
+
+  <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+
+  <div class="row a">
+    <section class="panel">
+      <h2>Trend over time</h2>
+      <div class="tabs" id="tabs">
+        <button type="button" data-tab="dl">Delay rate</button>
+        <button type="button" data-tab="head">Headway</button>
+        <button type="button" data-tab="trains">Trains in service</button>
+      </div>
+      <div class="chartbox" id="chart"></div>
+      <div class="legend" id="legend"></div>
+      <ul class="evlist" id="evlist"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Line scorecard</h2>
+      <p class="hint">Change is against the previous period of the same length. Select a row to filter the page to that line.</p>
+      <div class="scroll"><table id="score"></table></div>
+    </section>
+  </div>
+
+  <div class="row b">
+    <section class="panel">
+      <h2>Delay rate by line and week</h2>
+      <div class="chartbox" id="heat"></div>
+      <p class="cap" id="heatcap"></p>
+    </section>
+    <section class="panel">
+      <h2>When delays happen</h2>
+      <p class="hint">Delay rate by day of week and time of day for the selected range and line.</p>
+      <div class="chartbox" id="dow"></div>
+    </section>
+  </div>
+
+  <div class="row c">
+    <section class="panel">
+      <h2>Persistent trouble spots</h2>
+      <p class="hint">Lines at stations with the highest share of delayed predictions over the range, and how many days ran above 4%.</p>
+      <div class="scroll"><table id="stations"></table></div>
+    </section>
+    <section class="panel">
+      <h2>Feed health</h2>
+      <div id="health"></div>
+    </section>
+  </div>
+
+</Base>
+
+<style is:global>
+  @media(min-width:1000px){
+    .row.a,.row.c{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+    .row.b{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+  }
+  .tspark{display:block;margin-left:auto}
+  .legend .sw.thin{border-top-width:1px;opacity:.6}
+  .evlist{margin:10px 0 0;padding:0;list-style:none;font-size:13px;display:grid;gap:4px}
+  .evlist li{display:flex;gap:8px;align-items:baseline}
+  .evk{flex:none;display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--sel);color:var(--selInk);font:600 11px var(--ui)}
+</style>
+
+<script src="../scripts/trends.js"></script>

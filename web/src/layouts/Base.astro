@@ -1,0 +1,61 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+  // Set by Astro when this layout wraps a Markdown page.
+  frontmatter?: { title: string; description?: string };
+}
+
+const { frontmatter } = Astro.props;
+const { title, description } = frontmatter ?? Astro.props;
+const isProse = frontmatter !== undefined;
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const links = [
+  { href: `${base}/`, label: 'Service' },
+  { href: `${base}/trends/`, label: 'Trends' },
+  { href: `${base}/methodology/`, label: 'Methodology' },
+];
+const normalize = (p: string) => (p.endsWith('/') ? p : `${p}/`);
+const current = normalize(Astro.url.pathname);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title} · Unofficial Chicago “El” Transit Dashboard</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap"
+    />
+  </head>
+  <body>
+    <nav class="site-nav" aria-label="Site">
+      <div class="inner">
+        <a class="brand" href={`${base}/`}>Unofficial Chicago “El” Transit Dashboard</a>
+        <ul>
+          {links.map(({ href, label }) => (
+            <li>
+              <a href={href} aria-current={current === normalize(href) ? 'page' : undefined}>
+                {label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </nav>
+    <main class="wrap">
+      {isProse ? <article class="prose"><slot /></article> : <slot />}
+      <footer>
+        Unofficial metrics built from the CTA Train Tracker API. Not affiliated with or created by the CTA.
+      </footer>
+    </main>
+  </body>
+</html>

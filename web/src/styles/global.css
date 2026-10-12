@@ -1,0 +1,106 @@
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  --bg:#e8ecf0; --surface:#ffffff; --ink:#14212e; --muted:#586878; --rule:#d3dae1; --soft:#f1f4f7; --band:#e3ebf2;
+  --good:#17754a; --bad:#b3261e; --warn:#9a5b00; --water:#dbe8f3; --waterInk:#7b93a8;
+  --sel:#14212e; --selInk:#ffffff;
+  --ui:'Barlow',system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  --num:'Barlow Semi Condensed','Barlow',system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1620; --surface:#16212d; --ink:#e7edf3; --muted:#9aabbb; --rule:#2a3846; --soft:#1d2a38; --band:#213244;
+    --good:#4cc38a; --bad:#ff7b72; --warn:#e3a33b; --water:#1a2b3c; --waterInk:#5d7891;
+    --sel:#e7edf3; --selInk:#0e1620;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1620; --surface:#16212d; --ink:#e7edf3; --muted:#9aabbb; --rule:#2a3846; --soft:#1d2a38; --band:#213244;
+  --good:#4cc38a; --bad:#ff7b72; --warn:#e3a33b; --water:#1a2b3c; --waterInk:#5d7891;
+  --sel:#e7edf3; --selInk:#0e1620;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.45 var(--ui);-webkit-text-size-adjust:100%}
+.wrap{max-width:1280px;margin:0 auto;padding:16px 14px 40px}
+
+/* ---------- Site nav ---------- */
+.site-nav{background:var(--surface);border-bottom:1px solid var(--rule)}
+.site-nav .inner{max-width:1280px;margin:0 auto;padding:8px 14px;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;justify-content:space-between}
+.site-nav .brand{font:700 17px/1.2 var(--num);color:var(--ink);text-decoration:none;letter-spacing:.2px}
+.site-nav ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.site-nav ul a{display:inline-block;font:500 13.5px var(--ui);color:var(--ink);text-decoration:none;border:1px solid var(--rule);border-radius:4px;padding:5px 10px}
+.site-nav ul a[aria-current="page"]{background:var(--sel);color:var(--selInk);border-color:var(--sel)}
+.site-nav a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+/* ---------- Dashboard controls ---------- */
+h1{font:700 28px/1.1 var(--num);margin:0 0 4px;letter-spacing:.2px}
+.controls{display:grid;gap:8px}
+.ctl{display:grid;gap:4px}
+.ctl-l{font-size:13px;color:var(--muted)}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+button{font:500 13.5px var(--ui);color:var(--ink);background:var(--surface);border:1px solid var(--rule);border-radius:4px;padding:6px 10px;cursor:pointer}
+button[aria-pressed="true"]{background:var(--sel);color:var(--selInk);border-color:var(--sel)}
+button:focus-visible,tr:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.dot.sm{width:8px;height:8px;margin-right:3px}
+@media(min-width:760px){.ctl{grid-template-columns:92px 1fr;align-items:center}}
+
+/* ---------- KPI strip ---------- */
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:6px;overflow:hidden;margin-top:14px}
+.kpi{background:var(--surface);padding:12px 12px 8px;min-width:0}
+.kpi .l{font-size:13px;color:var(--muted)}
+.kpi .v{font:600 30px/1.1 var(--num);margin:2px 0 2px}
+.kpi .d{font-size:12.5px;color:var(--muted);min-height:18px}
+.kpi .spark{display:block;width:100%;height:28px;margin-top:4px}
+.good{color:var(--good)} .bad{color:var(--bad)}
+@media(max-width:719px){.kpi:last-child:nth-child(odd){grid-column:1/-1}}
+@media(min-width:720px){.kpis{grid-template-columns:repeat(4,1fr)}}
+
+/* ---------- Panels and tables ---------- */
+.row{display:grid;gap:12px;margin-top:12px;grid-template-columns:minmax(0,1fr)}
+.panel{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px;min-width:0}
+.panel h2{font:600 17px/1.2 var(--num);margin:0 0 2px}
+.hint{color:var(--muted);font-size:13px;margin:0 0 10px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+th{font-weight:500;color:var(--muted);text-align:right;padding:6px;border-bottom:1px solid var(--rule);font-size:12.5px;white-space:nowrap}
+td{padding:8px 6px;border-bottom:1px solid var(--rule);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+tbody tr[data-line]{cursor:pointer}
+tr.sel td{background:var(--soft)}
+tr.total td{font-weight:600;border-bottom:0}
+.hide-sm{display:none}
+@media(min-width:640px){th.hide-sm,td.hide-sm{display:table-cell}}
+.st{font-weight:500}
+.st .dot.sm:last-of-type{margin-right:6px}
+
+/* ---------- Charts ---------- */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 8px}
+.chartbox{position:relative;min-width:0}
+.chartbox svg{display:block;max-width:100%;touch-action:pan-y}
+.tip{position:absolute;top:2px;pointer-events:none;background:var(--ink);color:var(--surface);font-size:12.5px;line-height:1.35;padding:6px 8px;border-radius:4px;display:none;white-space:nowrap;z-index:2}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--muted);margin-top:6px}
+.legend .sw{display:inline-block;width:18px;height:0;border-top:2.5px solid var(--ink);vertical-align:middle;margin-right:5px}
+.legend .sw.dash{border-top:2px dashed var(--muted)}
+.ax{fill:var(--muted);font:11px var(--ui)}
+.ax2{fill:var(--ink);font:13px var(--ui)}
+.cap{font-size:13px;margin:8px 0 0;color:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0 10px}
+.stat .l{font-size:12.5px;color:var(--muted)}
+.stat .v{font:600 22px/1.15 var(--num)}
+.lineage table{font-size:13px;min-width:640px}
+.lineage td{white-space:normal;text-align:left;vertical-align:top}
+.lineage th{text-align:left}
+code{font:12.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--soft);padding:1px 4px;border-radius:3px}
+.note{font-size:13px;color:var(--muted);margin:10px 0 0}
+footer{margin-top:16px;font-size:12.5px;color:var(--muted)}
+
+/* ---------- Prose pages (Methodology) ---------- */
+.prose{max-width:72ch}
+.prose h1{margin-bottom:12px}
+.prose h2{font:600 20px/1.2 var(--num);margin:24px 0 6px}
+.prose h3{font:600 17px/1.2 var(--num);margin:18px 0 4px}
+.prose p,.prose li{line-height:1.6}
+.prose a{color:var(--ink)}
