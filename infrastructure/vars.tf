@@ -13,3 +13,13 @@ variable "services" {
     "secretmanager.googleapis.com"
   ]
 }
+variable "cloudflare_account_id" {
+  type        = string
+  description = "Cloudflare account ID that owns the dashboard Worker."
+}
+
+variable "cloudflare_api_token" {
+  type        = string
+  description = "Cloudflare API token with Workers Scripts Edit permission."
+  sensitive   = true
+}
