@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/archive"
       version = "~> 2.8"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.28"
+    }
   }
 }
 
@@ -23,4 +27,8 @@ provider "google" {
     "project"     = "chicago-el-train-dashboard"
     "managed-by"  = "terraform"
   }
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
