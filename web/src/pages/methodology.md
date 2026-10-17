@@ -6,7 +6,7 @@ description: How the CTA 'L' dashboard collects data and computes its metrics.
 
 # Methodology
 
-How the data is collected, processed and turned into the metrics on the Service and Trends pages.
+How the data is collected, processed and turned into the metrics on the Trends page.
 
 ## Data sources
 
