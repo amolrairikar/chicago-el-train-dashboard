@@ -14,8 +14,7 @@ const isProse = frontmatter !== undefined;
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const links = [
-  { href: `${base}/`, label: 'Service' },
-  { href: `${base}/trends/`, label: 'Trends' },
+  { href: `${base}/`, label: 'Trends' },
   { href: `${base}/methodology/`, label: 'Methodology' },
 ];
 const normalize = (p: string) => (p.endsWith('/') ? p : `${p}/`);
